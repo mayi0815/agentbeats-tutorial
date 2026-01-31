@@ -134,12 +134,24 @@ class Agent:
         tokens.extend(type_tokens)
         desired_color = self._desired_option_value(instruction, "color")
         desired_size = self._desired_option_value(instruction, "size")
+        desired_brand = self._desired_option_value(instruction, "brand")
+        desired_material = self._desired_option_value(instruction, "material")
         desired_color = desired_color.lower() if desired_color else None
         desired_size = desired_size.lower() if desired_size else None
+        desired_brand = desired_brand.lower() if desired_brand else None
+        desired_material = desired_material.lower() if desired_material else None
+        for token in self._desired_brand_tokens(instruction):
+            if token and token not in base_lower:
+                tokens.append(token)
+        for token in self._desired_material_tokens(instruction):
+            if token and token not in base_lower:
+                tokens.append(token)
         for phrase in self._filter_query_attributes(
             attributes,
             desired_color=desired_color,
             desired_size=desired_size,
+            desired_brand=desired_brand,
+            desired_material=desired_material,
         ):
             if phrase in base_lower:
                 continue
@@ -167,11 +179,23 @@ class Agent:
             pattern = rf"{key}\s*:\s*([^,]+)"
             match = re.search(pattern, instruction, re.IGNORECASE)
             if match:
-                values.append(match.group(1).strip())
+                values.extend(self._split_compound_values(match.group(1).strip()))
+        for phrase in self._desired_material_tokens(instruction):
+            values.append(phrase)
         for phrase in ("long sleeve", "short sleeve", "cotton", "polyester", "spandex", "leather"):
             if phrase in instruction.lower():
                 values.append(phrase)
-        return [value for value in values if value]
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            if not value:
+                continue
+            norm = self._normalize(value)
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            deduped.append(value)
+        return deduped
 
     def _pick_matching_option(self, clickables: list[str], desired_values: list[str]) -> str | None:
         if not desired_values:
@@ -238,9 +262,11 @@ class Agent:
     ) -> str | None:
         desired_values = self._desired_values(instruction)
         desired_phrases = self._desired_phrases_for_scoring(instruction)
-        price_upper = self._parse_price_upper(instruction)
+        price_lower, price_upper = self._parse_price_bounds(instruction)
         keywords = self._instruction_keywords(instruction)
         gender = self._instruction_gender(instruction)
+        brand_tokens = self._desired_brand_tokens(instruction)
+        material_tokens = self._desired_material_tokens(instruction)
         query = self._query_from_instruction(instruction)
         query_norm = self._normalize(query) if query else ""
         target_types = self._instruction_product_types(instruction)
@@ -287,11 +313,24 @@ class Agent:
                     score += weights["gender_match"]
                 elif self._gender_mismatch(title, gender):
                     score += weights["gender_mismatch"]
-            if price_upper is not None and price is not None:
-                if price <= price_upper:
-                    score += weights["price_match"]
+            if brand_tokens:
+                if self._tokens_in_text(brand_tokens, title_norm):
+                    score += weights["brand_match"]
                 else:
-                    score += weights["price_mismatch"]
+                    score += weights["brand_mismatch"]
+            if material_tokens:
+                if self._tokens_in_text(material_tokens, title_norm):
+                    score += weights["material_match"]
+                else:
+                    score += weights["material_mismatch"]
+            if price_lower is not None or price_upper is not None:
+                if price is not None:
+                    if self._price_in_bounds(price, price_lower, price_upper):
+                        score += weights["price_match"]
+                    else:
+                        score += weights["price_mismatch"]
+                else:
+                    score += weights.get("price_missing", 0.0)
             if best_score is None or score > best_score:
                 best_score = score
                 best_asin = clickable
@@ -315,11 +354,27 @@ class Agent:
         prices = [float(price) for price in matches]
         return min(prices) if prices else None
 
-    def _parse_price_upper(self, instruction: str) -> float | None:
-        match = re.search(r"price lower than\s+([0-9]+(?:\.[0-9]+)?)", instruction, re.IGNORECASE)
-        if not match:
-            return None
-        return float(match.group(1))
+    def _parse_price_bounds(self, instruction: str) -> tuple[float | None, float | None]:
+        text = instruction.lower()
+        match = re.search(
+            r"(?:price\s+between|between)\s+\$?([0-9]+(?:\.[0-9]+)?)\s+(?:and|to)\s+\$?([0-9]+(?:\.[0-9]+)?)",
+            text,
+        )
+        if match:
+            return float(match.group(1)), float(match.group(2))
+        match = re.search(
+            r"(?:price\s+lower than|price\s+less than|price\s+under|price\s+below|lower than|less than|under|below)\s+\$?([0-9]+(?:\.[0-9]+)?)",
+            text,
+        )
+        if match:
+            return None, float(match.group(1))
+        match = re.search(
+            r"(?:price\s+greater than|price\s+over|price\s+above|greater than|over|above)\s+\$?([0-9]+(?:\.[0-9]+)?)",
+            text,
+        )
+        if match:
+            return float(match.group(1)), None
+        return None, None
 
     def _instruction_keywords(self, instruction: str) -> list[str]:
         instruction = instruction.lower()
@@ -389,8 +444,7 @@ class Agent:
                 continue
             if "fit type" in part:
                 continue
-            part = re.sub(r"color\s*:\s*", "", part)
-            part = re.sub(r"size\s*:\s*", "", part)
+            part = re.sub(r"(?:color|size|brand|material)\s*:\s*", "", part)
             if not part:
                 continue
             phrases.append(part)
@@ -460,18 +514,23 @@ class Agent:
 
     def _default_scoring_weights(self) -> dict[str, float]:
         return {
-            "query_similarity": 2.0,
-            "keyword": 1.2,
-            "desired_value": 2.0,
-            "desired_phrase": 2.5,
-            "type_match": 5.0,
-            "type_missing": -2.5,
-            "non_target_type": -2.0,
-            "mismatch_type": -4.0,
-            "gender_match": 2.0,
-            "gender_mismatch": -3.5,
-            "price_match": 1.5,
-            "price_mismatch": -1.0,
+            "query_similarity": 1.964,
+            "keyword": 1.338,
+            "desired_value": 1.385,
+            "desired_phrase": 2.853,
+            "type_match": 5.515,
+            "type_missing": -3.363,
+            "non_target_type": -2.451,
+            "mismatch_type": -3.397,
+            "gender_match": 1.84,
+            "gender_mismatch": -3.913,
+            "price_match": 1.332,
+            "price_mismatch": -2.433,
+            "price_missing": -0.384,
+            "brand_match": 2.196,
+            "brand_mismatch": -4.148,
+            "material_match": 2.969,
+            "material_mismatch": -2.962,
         }
 
     def _filter_query_attributes(
@@ -480,6 +539,8 @@ class Agent:
         *,
         desired_color: str | None,
         desired_size: str | None,
+        desired_brand: str | None,
+        desired_material: str | None,
     ) -> list[str]:
         filtered: list[str] = []
         for phrase in phrases:
@@ -494,12 +555,60 @@ class Agent:
                 continue
             if desired_size and phrase == desired_size.lower():
                 continue
+            if desired_brand and phrase == desired_brand.lower():
+                continue
+            if desired_material and phrase == desired_material.lower():
+                continue
             if len(phrase) > 40:
                 continue
             filtered.append(phrase)
             if len(filtered) >= 2:
                 break
         return filtered
+
+    def _split_compound_values(self, value: str) -> list[str]:
+        parts = re.split(r"/|,| and ", value)
+        return [part.strip() for part in parts if part.strip()]
+
+    def _desired_brand_tokens(self, instruction: str) -> list[str]:
+        tokens: list[str] = []
+        brand = self._desired_option_value(instruction, "brand")
+        if brand:
+            tokens.extend(self._split_compound_values(brand))
+        match = re.search(r"brand\s+is\s+([^,]+)", instruction, re.IGNORECASE)
+        if match:
+            tokens.extend(self._split_compound_values(match.group(1).strip()))
+        return [token.lower() for token in tokens if token]
+
+    def _desired_material_tokens(self, instruction: str) -> list[str]:
+        tokens: list[str] = []
+        material = self._desired_option_value(instruction, "material")
+        if material:
+            tokens.extend(self._split_compound_values(material))
+        for pattern in (r"made of\s+([^,]+)", r"made from\s+([^,]+)"):
+            match = re.search(pattern, instruction, re.IGNORECASE)
+            if match:
+                tokens.extend(self._split_compound_values(match.group(1).strip()))
+        return [token.lower() for token in tokens if token]
+
+    def _tokens_in_text(self, tokens: list[str], text_norm: str) -> bool:
+        for token in tokens:
+            token_norm = self._normalize(token)
+            if token_norm and token_norm in text_norm:
+                return True
+        return False
+
+    def _price_in_bounds(
+        self,
+        price: float,
+        lower: float | None,
+        upper: float | None,
+    ) -> bool:
+        if lower is not None and price < lower:
+            return False
+        if upper is not None and price > upper:
+            return False
+        return True
 
     def _dedupe_and_join_tokens(self, tokens: list[str], max_tokens: int = 10) -> str:
         seen = set()

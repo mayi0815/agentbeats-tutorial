@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import random
 import sys
 from dataclasses import asdict, dataclass
@@ -41,6 +42,7 @@ class WebshopConfig(BaseModel):
     seed: int | None = None
     task_ids: list[int] | None = None
     split: str | None = None
+    result_path: str | None = None
 
 
 class EvalRequest(BaseModel):
@@ -133,6 +135,14 @@ class Agent:
                 for ep in episode_results
             ],
         }
+        result_path = config.result_path or os.getenv("WEBSHOP_RESULT_PATH")
+        if result_path:
+            try:
+                path = Path(result_path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(result_data, indent=2), encoding="utf-8")
+            except OSError as exc:
+                logger.warning("Failed to write result to %s: %s", result_path, exc)
         summary_text = (
             f"WebShop run complete (episodes={len(episode_results)}, "
             f"success={success}, reward={total_reward:.2f}, steps={total_steps})"

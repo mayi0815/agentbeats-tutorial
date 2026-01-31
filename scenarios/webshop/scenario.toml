@@ -12,6 +12,6 @@ max_steps = 10
 num_products = 1000
 observation_mode = "text"
 session_prefix = "demo-"
-num_episodes = 10
+num_episodes = 5
 seed = 42
 split = "test"
