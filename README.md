@@ -47,16 +47,53 @@ scenarios/
 │  ├─ Dockerfile.debate-judge
 │  ├─ Dockerfile.debater
 │  └─ scenario.toml
-└─ tau2/
-   ├─ evaluator/src/           # green agent (green-agent-template structure)
-   ├─ agent/src/               # purple agent (agent-template structure)
-   ├─ Dockerfile.tau2-evaluator
-   ├─ Dockerfile.tau2-agent
-   ├─ setup.sh                 # downloads tau2-bench data for local runs
+├─ tau2/
+│  ├─ evaluator/src/           # green agent (green-agent-template structure)
+│  ├─ agent/src/               # purple agent (agent-template structure)
+│  ├─ Dockerfile.tau2-evaluator
+│  ├─ Dockerfile.tau2-agent
+│  ├─ setup.sh                 # downloads tau2-bench data for local runs
+│  └─ scenario.toml
+└─ webshop/
+   ├─ webshop-evaluator/src/   # green agent copy of the debate judge
+   ├─ webshop-agent/src/       # purple agent copy of the debate debater
    └─ scenario.toml
 
 src/agentbeats/                # optional local runner + A2A client helpers (`agentbeats-run`)
 ```
+
+## WebShop Scenario
+The `scenarios/webshop` example demonstrates hooking the open-source [WebShop gym](https://github.com/mayi0815/WebShop) into AgentBeats. The WebShop green agent:
+1. Resets `WebAgentTextEnv` with the incoming `task_id`, fetching the goal/instruction text and available actions (search bar, clickable buttons/options).
+2. Streams the observation, action candidates, and instruction to a single purple agent, which replies with structured JSON actions (`search`, `click`, `choose`).
+3. Executes each action against the Gym environment, keeps `(observation, reward, done)` tuples, and stops when the browser returns `done` or the configured `max_steps` is reached.
+4. Marks success when the environment reward equals `1` and emits a JSON artifact containing the trace, total reward, and success flag.
+
+To run it:
+
+1. Install the WebShop dependencies: `uv sync --extra webshop`.
+2. Initialize the vendored environment and fetch the data/indexes:  
+   ```bash
+   git submodule update --init third_party/webshop
+   cd third_party/webshop
+   ./setup.sh -d small
+   ```  
+   The setup downloads Pyserini indexes, Spacy models, and other artifacts. On macOS you may need to install a compiler that supports OpenMP and run `python -m spacy download en_core_web_lg` manually (see `third_party/webshop/README_INSTALL_ARM-MAC.md`) because building `scikit-learn`/`spacy` from source can fail otherwise.
+3. From the repo root, award the assessment with:
+   ```
+   uv run agentbeats-run scenarios/webshop/scenario.toml --show-logs
+   ```
+
+The new evaluator is a proof-of-concept stateful agent that relies purely on the WebShop reward signal instead of an LLM judge, so it's a good starting point if you want to build your own state-based benchmarks. You can customize the scenario with additional fields under `[config]`:
+
+```
+num_episodes = 3          # number of goal episodes to run per assessment
+seed = 42                 # sampling seed so runs are reproducible
+split = "train"           # choose from test/eval/train ranges or leave empty for all goals
+task_ids = [10, 42, 101]  # optional explicit goal indexes (overrides random sampling)
+```
+
+When `task_ids` are provided, the evaluator runs those goals (respecting `num_episodes` as a slice). Otherwise it samples `num_episodes` goals from the chosen `split` (train/eval/test) before stepping through each WebShop episode, which makes it easy to reproduce or iterate on particular tasks without touching the environment internals.
 
 # AgentBeats Tutorial
 Welcome to the AgentBeats Tutorial! 🤖🎵

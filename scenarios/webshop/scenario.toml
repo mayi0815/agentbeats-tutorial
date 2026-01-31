@@ -1,0 +1,17 @@
+[green_agent]
+endpoint = "http://127.0.0.1:9009"
+cmd = "python scenarios/webshop/webshop-evaluator/src/server.py --host 127.0.0.1 --port 9009"
+
+[[participants]]
+role = "webshop_agent"
+endpoint = "http://127.0.0.1:9019"
+cmd = "python scenarios/webshop/webshop-agent/src/server.py --host 127.0.0.1 --port 9019"
+
+[config]
+max_steps = 10
+num_products = 1000
+observation_mode = "text"
+session_prefix = "demo-"
+num_episodes = 10
+seed = 42
+split = "test"

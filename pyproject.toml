@@ -27,6 +27,28 @@ tau2-evaluator = [
     "nest-asyncio>=1.6.0",
     "tau2 @ git+https://github.com/sierra-research/tau2-bench.git",
 ]
+webshop = [
+    "beautifulsoup4>=4.11.1",
+    "cleantext>=1.1.4",
+    "env>=0.1.0",
+    "Flask>=2.1.2",
+    "gdown>=5.2.1",
+    "gym>=0.24.0",
+    "numpy>=1.22.4",
+    "pandas>=2.2.3",
+    "pyserini==0.17.0",
+    "PyYAML>=6.0",
+    "rank_bm25>=0.2.2",
+    "requests>=2.27.1",
+    "rich>=12.4.4",
+    "selenium>=4.2.0",
+    "scikit-learn>=1.1.1",
+    "spacy>=3.3.0",
+    "thefuzz>=0.19.0",
+    "torch>=1.11.0",
+    "tqdm>=4.64.0",
+    "transformers>=4.19.2",
+]
 
 [project.scripts]
 agentbeats-run = "agentbeats.run_scenario:main"

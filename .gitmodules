@@ -1,0 +1,3 @@
+[submodule "third_party/webshop"]
+	path = third_party/webshop
+	url = https://github.com/mayi0815/WebShop.git
