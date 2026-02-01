@@ -2,7 +2,7 @@
 > - [agent-template](https://github.com/RDI-Foundation/agent-template) – for purple agents
 > - [green-agent-template](https://github.com/RDI-Foundation/green-agent-template) – for green agents
 
-## Quickstart
+## Quickstart (WebShop benchmark)
 1. Clone the repo
 ```
 git clone git@github.com:RDI-Foundation/agentbeats-tutorial.git agentbeats-tutorial
@@ -10,33 +10,30 @@ cd agentbeats-tutorial
 ```
 2. Install dependencies
 ```
-uv sync --extra debate
+uv sync --extra webshop
 ```
-This installs the optional dependencies needed to run the debate scenario (Gemini).
-3. Set environment variables
+This pulls in the WebShop requirement set (selenium, faiss-cpu, spaCy, etc.) needed for the text-mode Gym environment.
+3. Prepare environment artifacts
+```
+git submodule update --init third_party/webshop
+cd third_party/webshop
+./setup.sh -d small
+```
+`setup.sh` downloads product data, builds the Pyserini index, and installs language models. On macOS/Apple Silicon you may need to install an OpenMP-capable compiler (e.g. `brew install libomp`) and run `python -m spacy download en_core_web_lg` manually; see `third_party/webshop/README_INSTALL_ARM-MAC.md` for details.
+4. Back in the repo root, configure environment variables if you need API keys:
 ```
 cp sample.env .env
 ```
-Fill in the keys you plan to use (e.g. `GOOGLE_API_KEY` for the debate example and `OPENAI_API_KEY` for the tau2 example).
-
-4. Run the [debate example](#example)
+You only need actual credentials if you plan to run the other scenarios (debate/tau2). The WebShop run uses the local Gym plus Selenium, so no API key is required.
+5. Run the WebShop assessment end-to-end
 ```
-uv run agentbeats-run scenarios/debate/scenario.toml
+uv run agentbeats-run scenarios/webshop/scenario.toml --show-logs
 ```
-This command will:
-- Start the agent servers using the commands specified in scenario.toml
-- Construct an `assessment_request` message containing the participant's role-endpoint mapping and the assessment config
-- Send the `assessment_request` to the green agent and print streamed responses
+This command launches the green evaluator, starts the purple (shopping) agent, runs `num_episodes` WebShop goals, and streams step-by-step rewards. The green agent produces a JSON artifact with `total_reward`, `steps`, `success`, and per-episode traces (see the CLI output for the summary).
 
-**Note:** Use `--show-logs` to see agent outputs during the assessment, and `--serve-only` to start agents without running the assessment.
+Each run can be customized through `[config]` in `scenarios/webshop/scenario.toml` (e.g., `num_episodes`, `seed`, `split`, `task_ids`). For reproducibility you can also set `WEBSHOP_RESULT_PATH` to dump the JSON artifact to disk and `WEBSHOP_SCORING_WEIGHTS` to override the default scoring weights.
 
-**Note:** If you see `Error: Some agent endpoints are already in use`, change the ports in the scenario TOML (or stop the process using them).
-
-To run this example manually, start the agent servers in separate terminals, and then in another terminal run the A2A client on the scenario.toml file to initiate the assessment.
-
-After running, you should see an output similar to this.
-
-![Sample output](assets/sample_output.png)
+If you still want to run the debate example afterward, repeat the steps above with `uv sync --extra debate` and `uv run agentbeats-run scenarios/debate/scenario.toml`.
 
 ## Project Structure
 ```
@@ -62,38 +59,26 @@ scenarios/
 src/agentbeats/                # optional local runner + A2A client helpers (`agentbeats-run`)
 ```
 
-## WebShop Scenario
-The `scenarios/webshop` example demonstrates hooking the open-source [WebShop gym](https://github.com/mayi0815/WebShop) into AgentBeats. The WebShop green agent:
-1. Resets `WebAgentTextEnv` with the incoming `task_id`, fetching the goal/instruction text and available actions (search bar, clickable buttons/options).
-2. Streams the observation, action candidates, and instruction to a single purple agent, which replies with structured JSON actions (`search`, `click`, `choose`).
-3. Executes each action against the Gym environment, keeps `(observation, reward, done)` tuples, and stops when the browser returns `done` or the configured `max_steps` is reached.
-4. Marks success when the environment reward equals `1` and emits a JSON artifact containing the trace, total reward, and success flag.
+## WebShop Scenario (green evaluator + purple agent)
+The `scenarios/webshop` directory demonstrates a state-based benchmark where the green agent evaluates a golfing purple shopping agent inside the official [WebShop Gym](https://github.com/mayi0815/WebShop).
 
-To run it:
+### What the benchmark evaluates
+- **Task:** choose the correct product that matches the instruction (brand, color, material, fit) while respecting price bounds.  
+- **State space:** the text observation returned by `WebAgentTextEnv` that includes the instruction, search results with ASIN/title/price chunks, product detail pages with options, and the list of clickable actions (search bar, ASINs, options, buy button).  
+- **Actions:** the purple agent replies with JSON actions (`{"type":"search","query":...}`, `{"type":"click","text":...}`, `{"type":"choose","text":...}`, `{"type":"buy","text":"Buy Now"}`), which the green agent converts to `search[...]` or `click[...]` strings before calling `env.step`.  
+- **State transitions:** `search` widens the catalog view; `click` on an ASIN opens its detail page in the observation; `choose`/`click` on an option selects color/size; `buy` triggers the purchase reward. Each action produces a new `(observation, reward, done, info)` tuple from Gym.  
+- **Completion:** the environment returns `done` when either a reward is issued (1.0 for perfect match, fractional for partial matches) or `max_steps` is reached.
 
-1. Install the WebShop dependencies: `uv sync --extra webshop`.
-2. Initialize the vendored environment and fetch the data/indexes:  
-   ```bash
-   git submodule update --init third_party/webshop
-   cd third_party/webshop
-   ./setup.sh -d small
-   ```  
-   The setup downloads Pyserini indexes, Spacy models, and other artifacts. On macOS you may need to install a compiler that supports OpenMP and run `python -m spacy download en_core_web_lg` manually (see `third_party/webshop/README_INSTALL_ARM-MAC.md`) because building `scikit-learn`/`spacy` from source can fail otherwise.
-3. From the repo root, award the assessment with:
-   ```
-   uv run agentbeats-run scenarios/webshop/scenario.toml --show-logs
-   ```
+### How the green agent evaluates
+- The green agent orchestrates `num_episodes` goals per assessment (configurable via `scenario.toml` or environment variables such as `WEBSHOP_RESULT_PATH` for artifacts). It samples goals from a split (`test`, `eval`, `train`) or uses explicit `task_ids` to ensure repeatability.  
+- During each episode, it calls the purple agent via A2A, sends the current observation/available actions/instruction, and records the purple agent’s JSON action. After converting the action to a WebShop step string, it executes `env.step`, accumulates reward, and appends the transition to a trace.  
+- At the end it outputs a JSON artifact that reports `success` (reward ≥ 1 in any step), `total_reward`, `steps`, and a detailed trace for debugging.
 
-The new evaluator is a proof-of-concept stateful agent that relies purely on the WebShop reward signal instead of an LLM judge, so it's a good starting point if you want to build your own state-based benchmarks. You can customize the scenario with additional fields under `[config]`:
-
-```
-num_episodes = 3          # number of goal episodes to run per assessment
-seed = 42                 # sampling seed so runs are reproducible
-split = "train"           # choose from test/eval/train ranges or leave empty for all goals
-task_ids = [10, 42, 101]  # optional explicit goal indexes (overrides random sampling)
-```
-
-When `task_ids` are provided, the evaluator runs those goals (respecting `num_episodes` as a slice). Otherwise it samples `num_episodes` goals from the chosen `split` (train/eval/test) before stepping through each WebShop episode, which makes it easy to reproduce or iterate on particular tasks without touching the environment internals.
+Examples from recent runs:
+1. Search → ASIN → color/size selection → buy → reward 1.0 → recorded as success.  
+2. Search wrong price → buy → reward 0.8 → success but flagged price mismatch in the trace.  
+3. Short sequence ending in “buy now” but with mismatched attributes → low reward 0.05 → marked as failure.  
+The green agent logs each action/reward pair so you can inspect how scores were assigned.
 
 # AgentBeats Tutorial
 Welcome to the AgentBeats Tutorial! 🤖🎵
