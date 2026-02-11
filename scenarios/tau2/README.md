@@ -49,3 +49,17 @@ The agent LLM defaults to `openai/gpt-4.1` and can be configured via the `--agen
 
 - **evaluator/src/** (Green Agent): Runs the tau2 Orchestrator which coordinates the user simulator, environment, and agent
 - **agent/src/** (Purple Agent): The agent being tested - receives task descriptions and responds with tool calls or user responses
+
+## Purple Agent Contract
+
+The purple agent in `scenarios/tau2/agent/src/` is finalized for AgentBeats-style evaluation:
+
+- **A2A interoperable**: it exposes a standard A2A server and returns exactly one JSON action artifact per turn in the form `{"name": "...", "arguments": {...}}`.
+- **Reproducible behavior**: per-conversation state is isolated by `context_id`, deterministic decoding is used (`temperature=0.0`), and history is bounded with configurable limits.
+- **Benchmark-compatible**: responses are sanitized against allowed action names from the evaluator prompt, with safe fallbacks when model output is invalid.
+
+Optional runtime settings:
+
+- `TAU2_AGENT_LLM`: override the purple agent model (default `openai/gpt-4.1`)
+- `TAU2_AGENT_MAX_TURNS`: max remembered turns per conversation (default `60`)
+- `TAU2_AGENT_MAX_CONTEXTS`: max active contexts kept in memory (default `128`)

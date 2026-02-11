@@ -188,17 +188,28 @@ class Agent:
         episode_idx: int,
         goal_idx: int,
     ) -> EpisodeResult:
-        session_id = f"{context_id}-ep{episode_idx}"
-        env.server.user_sessions.pop(session_id, None)
+        # Compute the actual session_id that will be used by the environment
+        # The env adds session_prefix if configured
+        base_session_id = f"{context_id}-ep{episode_idx}"
+        if config.session_prefix:
+            actual_session_id = config.session_prefix + base_session_id
+        else:
+            actual_session_id = base_session_id
+        
+        env.server.user_sessions.pop(actual_session_id, None)
         goal = env.server.goals[goal_idx]
-        env.server.user_sessions[session_id] = {"goal": goal, "done": False}
+        env.server.user_sessions[actual_session_id] = {"goal": goal, "done": False}
         self.messenger.reset()
 
-        obs, _ = env.reset(session=session_id)
+        obs, _ = env.reset(session=base_session_id)
         trace: list[ActionTrace] = []
         total_reward = 0.0
         steps = 0
         done = False
+        
+        # Use goal's instruction text directly instead of env.instruction_text
+        # to avoid HTML parsing issues
+        correct_instruction = goal.get('instruction_text', env.instruction_text)
 
         await updater.update_status(
             TaskState.working,
@@ -215,7 +226,7 @@ class Agent:
                     "available_actions": available_actions,
                     "step": steps,
                     "max_steps": config.max_steps,
-                    "instruction": env.instruction_text,
+                    "instruction": correct_instruction,
                     "episode": episode_idx,
                     "goal_idx": goal_idx,
                 }
@@ -225,8 +236,8 @@ class Agent:
                     new_conversation=True,
                 )
 
-                action = self._parse_action(response, env.instruction_text)
-                action_str = self._format_action(action, env.instruction_text)
+                action = self._parse_action(response, correct_instruction)
+                action_str = self._format_action(action, correct_instruction)
 
                 obs, reward, done, info = env.step(action_str)
                 total_reward += reward
@@ -250,7 +261,7 @@ class Agent:
                     ),
                 )
         finally:
-            env.server.user_sessions.pop(session_id, None)
+            env.server.user_sessions.pop(actual_session_id, None)
 
         success = any(entry.reward >= 1 for entry in trace)
         return EpisodeResult(

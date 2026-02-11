@@ -1,9 +1,11 @@
+import os
+from collections import OrderedDict
+
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
 from a2a.types import (
     InvalidRequestError,
-    Task,
     TaskState,
     UnsupportedOperationError,
 )
@@ -26,7 +28,8 @@ TERMINAL_STATES = {
 
 class Executor(AgentExecutor):
     def __init__(self):
-        self.agents: dict[str, Agent] = {}
+        self.max_contexts = int(os.getenv("TAU2_AGENT_MAX_CONTEXTS", "128"))
+        self.agents: OrderedDict[str | None, Agent] = OrderedDict()
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         msg = context.message
@@ -50,10 +53,7 @@ class Executor(AgentExecutor):
         await updater.start_work()
 
         try:
-            agent = self.agents.get(context_id)
-            if not agent:
-                agent = Agent()
-                self.agents[context_id] = agent
+            agent = self._get_or_create_agent(context_id)
 
             await agent.run(msg, updater)
             if not updater._terminal_state_reached:
@@ -66,3 +66,18 @@ class Executor(AgentExecutor):
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         raise ServerError(error=UnsupportedOperationError())
+
+    def _get_or_create_agent(self, context_id: str | None) -> Agent:
+        agent = self.agents.get(context_id)
+        if agent:
+            self.agents.move_to_end(context_id)
+            return agent
+
+        new_agent = Agent()
+        self.agents[context_id] = new_agent
+        self.agents.move_to_end(context_id)
+
+        while len(self.agents) > self.max_contexts:
+            self.agents.popitem(last=False)
+
+        return new_agent
